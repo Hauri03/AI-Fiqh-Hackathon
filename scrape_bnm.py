@@ -202,57 +202,83 @@ async def scrape_details(page: Page, url: str, listing_title: str) -> Dict:
             "content": f"Error: {str(e)}"
         }
 
+# --- Supabase Setup ---
+from supabase import create_client, Client
+
+SUPABASE_URL = "https://wndnznopltyrbiujyhgh.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InduZG56bm9wbHR5cmJpdWp5aGdoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2ODg3NzE1OCwiZXhwIjoyMDg0NDUzMTU4fQ.i8GtCqey7PW8q21E3Mw1fQKxYPmGIfQBOZr1HGGbu48"
+TABLE_NAME = "bnm_notices"
+
+def init_supabase():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+async def check_existing_urls(supabase: Client, urls: List[str]) -> List[str]:
+    """
+    Check which URLs already exist in Supabase to skip them.
+    """
+    if not urls:
+        return []
+        
+    existing = []
+    # Query in chunks to avoid URL length limits if checking many
+    chunk_size = 20
+    for i in range(0, len(urls), chunk_size):
+        batch = urls[i:i+chunk_size]
+        try:
+            # We select only the URL column where URL is in our list
+            response = supabase.table(TABLE_NAME).select("url").in_("url", batch).execute()
+            if response.data:
+                existing.extend([item['url'] for item in response.data])
+        except Exception as e:
+            print(f"Error checking existing URLs: {e}")
+            
+    return existing
+
 async def run_scraper():
+    supabase = init_supabase()
     playwright, browser, context = await setup_browser()
     page = await context.new_page()
-    
-    final_data = []
     
     try:
         # 1. Get ALL listings
         print("Starting listing scrape...")
-        items = await scrape_all_listings(page)
-        print(f"Finished scraping listings. Found {len(items)} total articles.")
+        all_items = await scrape_all_listings(page)
+        print(f"Finished scraping listings. Found {len(all_items)} total articles.")
         
-        # 2. Scrape details
-        # For robustness, save progressively or in chunks? 
-        # For now, let's just do it sequentially.
+        # 2. Deduplication: Filter out items that are already in Supabase
+        all_urls = [item['url'] for item in all_items]
+        existing_urls = await check_existing_urls(supabase, all_urls)
         
-        for i, item in enumerate(items):
-            print(f"[{i+1}/{len(items)}] {item['title'][:40]}...")
+        new_items = [item for item in all_items if item['url'] not in existing_urls]
+        
+        print(f"Deduplication Analysis:")
+        print(f"Total Found: {len(all_items)}")
+        print(f"Already in DB: {len(existing_urls)}")
+        print(f"New to Scrape: {len(new_items)}")
+        
+        if not new_items:
+            print("No new articles to scrape. Exiting.")
+            return
+
+        # 3. Scrape details for NEW items only
+        final_data = []
+        for i, item in enumerate(new_items):
+            print(f"[{i+1}/{len(new_items)}] Scraping NEW article: {item['title'][:40]}...")
+            
             data = await scrape_details(page, item['url'], item['title'])
-            final_data.append(data)
             
-            # Auto-save every 10 items
-            if (i + 1) % 10 == 0:
-                save_to_csv(final_data, "bnm_notices_partial.csv")
-            
+            # 4. Upload DIRECTLY to Supabase (Successive Upsert)
+            try:
+                response = supabase.table(TABLE_NAME).upsert(data, on_conflict="url").execute()
+                print(f"   -> Uploaded to Supabase.")
+            except Exception as e:
+                print(f"   -> FAILED to upload: {e}")
+
+            # Small delay to be polite
             await asyncio.sleep(0.5)
             
     finally:
         await close_browser(playwright, browser)
-        
-    return final_data
-
-def save_to_csv(data: List[Dict], filename="bnm_notices_full.csv"):
-    if not data:
-        return
-    
-    # Ensure keys are consistent
-    keys = ["url", "title", "date", "content"]
-    
-    with open(filename, 'w', newline='', encoding='utf-8-sig') as f: # utf-8-sig for Excel
-        writer = csv.DictWriter(f, fieldnames=keys)
-        writer.writeheader()
-        for row in data:
-            # clean keys not in header
-            clean_row = {k: row.get(k, "") for k in keys}
-            writer.writerow(clean_row)
-    print(f"Saved {len(data)} rows to {filename}")
 
 if __name__ == "__main__":
-    data = asyncio.run(run_scraper())
-    save_to_csv(data, "bnm_notices_full.csv")
-    # Clean up partial
-    if os.path.exists("bnm_notices_partial.csv"):
-        os.remove("bnm_notices_partial.csv")
+    asyncio.run(run_scraper())
