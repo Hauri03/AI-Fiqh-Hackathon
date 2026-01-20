@@ -2,6 +2,7 @@ import asyncio
 import csv
 import os
 import re
+from datetime import datetime
 from typing import List, Dict
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from playwright_stealth import stealth_async
@@ -261,11 +262,13 @@ async def run_scraper():
             return
 
         # 3. Scrape details for NEW items only
-        final_data = []
         for i, item in enumerate(new_items):
             print(f"[{i+1}/{len(new_items)}] Scraping NEW article: {item['title'][:40]}...")
             
             data = await scrape_details(page, item['url'], item['title'])
+            
+            # Add updated_at
+            data['updated_at'] = datetime.utcnow().isoformat()
             
             # 4. Upload DIRECTLY to Supabase (Successive Upsert)
             try:
@@ -273,6 +276,8 @@ async def run_scraper():
                 print(f"   -> Uploaded to Supabase.")
             except Exception as e:
                 print(f"   -> FAILED to upload: {e}")
+                if 'column "updated_at" of relation "bnm_notices" does not exist' in str(e):
+                    print("!!! ALERT: You need to create the 'updated_at' column in Supabase first.")
 
             # Small delay to be polite
             await asyncio.sleep(0.5)
