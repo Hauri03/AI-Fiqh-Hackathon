@@ -52,35 +52,59 @@ def html_to_markdown(html_content):
     
     # Process Tables
     for table in soup.find_all('table'):
-        markdown_table = []
         rows = table.find_all('tr')
         if not rows:
             continue
-            
-        # Headers
-        headers = []
-        first_row = rows[0]
-        cells = first_row.find_all(['th', 'td'])
-        headers = [clean_text(cell.get_text()) for cell in cells]
+
+        # 1. Determine dimensions
+        # A simple pass might be inaccurate if there are complex spans, 
+        # so we'll just build a sparse matrix (dict) and calculate max cols later or infer it.
+        # Actually, let's assume a grid.
         
-        if not headers:
-            continue
-            
-        markdown_table.append(f"| {' | '.join(headers)} |")
-        markdown_table.append(f"| {' | '.join(['---'] * len(headers))} |")
+        grid = {} # (row_idx, col_idx) -> text
+        max_col = 0
         
-        # Data
-        for row in rows[1:]:
+        for r_idx, row in enumerate(rows):
             cells = row.find_all(['td', 'th'])
-            row_data = [clean_text(cell.get_text()) for cell in cells]
-            # Pad row if needed
-            while len(row_data) < len(headers):
-                row_data.append("")
-            markdown_table.append(f"| {' | '.join(row_data)} |")
-        
+            c_idx = 0
+            for cell in cells:
+                # Skip if this position is already filled (by a rowspan from above)
+                while (r_idx, c_idx) in grid:
+                    c_idx += 1
+                
+                text = clean_text(cell.get_text())
+                rowspan = int(cell.get('rowspan', 1))
+                colspan = int(cell.get('colspan', 1))
+                
+                # Fill the grid
+                for r in range(rowspan):
+                    for c in range(colspan):
+                        grid[(r_idx + r, c_idx + c)] = text
+                        
+                c_idx += colspan
+                max_col = max(max_col, c_idx)
+
+        # 2. Extract headers (first row) and data
+        markdown_lines = []
+        if rows:
+            # Headers - assume row 0
+            headers = []
+            for c in range(max_col):
+                headers.append(grid.get((0, c), ""))
+            
+            markdown_lines.append(f"| {' | '.join(headers)} |")
+            markdown_lines.append(f"| {' | '.join(['---'] * len(headers))} |")
+            
+            # Data - rows 1 to end
+            for r in range(1, len(rows)):
+                row_cells = []
+                for c in range(max_col):
+                    row_cells.append(grid.get((r, c), "")) # Propagated text
+                markdown_lines.append(f"| {' | '.join(row_cells)} |")
+
         # Replace table with markdown
         new_tag = soup.new_tag("p")
-        new_tag.string = "\n" + "\n".join(markdown_table) + "\n"
+        new_tag.string = "\n" + "\n".join(markdown_lines) + "\n"
         table.replace_with(new_tag)
 
     # Process basic tags
@@ -271,6 +295,16 @@ async def run_scraper():
             data['updated_at'] = datetime.utcnow().isoformat()
             
             # 4. Upload DIRECTLY to Supabase (Successive Upsert)
+            try:
+                response = supabase.table(TABLE_NAME).upsert(data, on_conflict="url").execute()
+                print(f"   -> Uploaded to Supabase.")
+            except Exception as e:
+                print(f"   -> FAILED to upload: {e}")
+                if 'column "updated_at" of relation "bnm_notices" does not exist' in str(e):
+                    print("!!! ALERT: You need to create the 'updated_at' column in Supabase first.")
+
+            # Small delay to be polite
+            await asyncio.sleep(0.5)
             try:
                 response = supabase.table(TABLE_NAME).upsert(data, on_conflict="url").execute()
                 print(f"   -> Uploaded to Supabase.")
