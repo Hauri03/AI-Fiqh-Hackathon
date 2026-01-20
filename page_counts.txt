@@ -1,0 +1,19 @@
+Filename                                           | Pages
+------------------------------------------------------------
+00_Preliminaries.pdf                               | 20   
+01_Bahagian_I_Produk_Perbankan_Islam.pdf           | 18   
+02_Bahagian_II_Takaful.pdf                         | 24   
+03_Bahagian_III_Instrumen_Pasaran_Wang.pdf         | 8    
+04_Bai_Al-Sarf.pdf                                 | 5    
+05_Hibah.pdf                                       | 11   
+06_Ijarah.pdf                                      | 11   
+07_Istisna.pdf                                     | 7    
+08_Kafalah.pdf                                     | 6    
+09_Qard.pdf                                        | 4    
+10_Rahn.pdf                                        | 12   
+11_Tawarruq.pdf                                    | 3    
+12_Wad.pdf                                         | 7    
+13_Wakalah.pdf                                     | 4    
+14_Bahagian_V_Penggulungan.pdf                     | 8    
+15_Bahagian_VI_Lain_Lain.pdf                       | 24   
+16_Glosari_End.pdf                                 | 16   
