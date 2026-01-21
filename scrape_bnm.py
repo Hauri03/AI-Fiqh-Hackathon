@@ -199,14 +199,32 @@ async def scrape_details(page: Page, url: str, listing_title: str) -> Dict:
         content_loc = page.locator('.journal-content-article')
         content_md = ""
         
-        if await content_loc.count() > 0:
-            # multiple elements might exist, take the first visible one or the main one
-            # The error showed: 1) Print Notices... 2) .asset-content > .journal-content-article
-            # Usually the second one is better if nested, but .first is safer than erroring.
-            # Let's try to get the one with the most text or just the first.
-            # For now, .first reduces the error rate immediately.
-            html = await content_loc.first.inner_html()
-            content_md = html_to_markdown(html)
+        count = await content_loc.count()
+        if count > 0:
+            found_valid_content = False
+            for i in range(count):
+                element = content_loc.nth(i)
+                text_content = await element.inner_text()
+                
+                # Filter out short garbage (e.g. "Print" button)
+                if len(text_content) < 100:
+                    continue
+
+                # Filter out the Sidebar
+                # The sidebar typically contains "Filter by year" and "Search keywords"
+                if "Filter by year" in text_content and "Search keywords" in text_content:
+                    continue
+                
+                # This is likely the real content
+                html = await element.inner_html()
+                content_md = html_to_markdown(html)
+                found_valid_content = True
+                break
+            
+            if not found_valid_content:
+                # Fallback: if we filtered everything out, maybe the article is just weird?
+                # Just take the first one (or last?) as a Hail Mary, or leave empty.
+                content_md = "Error: Only sidebar found."
         else:
             # Fallback
             content_md = "No content found or stealth block."
