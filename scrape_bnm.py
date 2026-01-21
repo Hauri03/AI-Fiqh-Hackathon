@@ -230,8 +230,8 @@ async def scrape_details(page: Page, url: str, listing_title: str) -> Dict:
 # --- Supabase Setup ---
 from supabase import create_client, Client
 
-SUPABASE_URL = "https://wndnznopltyrbiujyhgh.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InduZG56bm9wbHR5cmJpdWp5aGdoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2ODg3NzE1OCwiZXhwIjoyMDg0NDUzMTU4fQ.i8GtCqey7PW8q21E3Mw1fQKxYPmGIfQBOZr1HGGbu48"
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 TABLE_NAME = "bnm_notices"
 
 def init_supabase():
@@ -258,6 +258,22 @@ async def check_existing_urls(supabase: Client, urls: List[str]) -> List[str]:
             print(f"Error checking existing URLs: {e}")
             
     return existing
+
+# --- OpenAI Setup ---
+from openai import OpenAI
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+MODEL_EMBEDDING = "text-embedding-3-large"
+
+def generate_embedding(text):
+    if not text:
+        return None
+    try:
+        text = text.replace("\n", " ")
+        return openai_client.embeddings.create(input=[text], model=MODEL_EMBEDDING).data[0].embedding
+    except Exception as e:
+        print(f"Error generating embedding: {e}")
+        return None
 
 async def run_scraper():
     supabase = init_supabase()
@@ -296,8 +312,29 @@ async def run_scraper():
             
             # 4. Upload DIRECTLY to Supabase (Successive Upsert)
             try:
+                # Upsert and return the ID
                 response = supabase.table(TABLE_NAME).upsert(data, on_conflict="url").execute()
                 print(f"   -> Uploaded to Supabase.")
+                
+                # 5. Vectorization
+                if response.data:
+                    inserted_record = response.data[0]
+                    notice_id = inserted_record.get('id')
+                    content = inserted_record.get('content')
+                    
+                    if notice_id and content:
+                        print("   -> Generating embedding...")
+                        embedding = generate_embedding(content)
+                        if embedding:
+                            emb_data = {
+                                "notice_id": notice_id,
+                                "embedding": embedding
+                            }
+                            supabase.table("bnm_notices_embeddings").insert(emb_data).execute()
+                            print("   -> Embedding saved.")
+                        else:
+                            print("   -> Skipping embedding (Generation failed or empty content).")
+                            
             except Exception as e:
                 print(f"   -> FAILED to upload: {e}")
                 if 'column "updated_at" of relation "bnm_notices" does not exist' in str(e):
