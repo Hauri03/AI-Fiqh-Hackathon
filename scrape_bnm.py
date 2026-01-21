@@ -229,13 +229,40 @@ async def scrape_details(page: Page, url: str, listing_title: str) -> Dict:
 
 # --- Supabase Setup ---
 from supabase import create_client, Client
+from openai import OpenAI
+from dotenv import load_dotenv
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+# Load env (for OpenAI)
+load_dotenv()
+
+SUPABASE_URL = "https://wndnznopltyrbiujyhgh.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InduZG56bm9wbHR5cmJpdWp5aGdoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2ODg3NzE1OCwiZXhwIjoyMDg0NDUzMTU4fQ.i8GtCqey7PW8q21E3Mw1fQKxYPmGIfQBOZr1HGGbu48"
 TABLE_NAME = "bnm_notices"
+VECTOR_TABLE = "bnm_notices_vectors"
+MODEL = "text-embedding-3-large"
 
 def init_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def init_openai():
+    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+def get_chunks(text, chunk_size=2000, overlap=200):
+    if not text:
+        return []
+    chunks = []
+    start = 0
+    text_len = len(text)
+    while start < text_len:
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk)
+        start += (chunk_size - overlap)
+    return chunks
+
+def get_embedding(client, text):
+    text = text.replace("\n", " ")
+    return client.embeddings.create(input=[text], model=MODEL).data[0].embedding
 
 async def check_existing_urls(supabase: Client, urls: List[str]) -> List[str]:
     """
@@ -259,24 +286,10 @@ async def check_existing_urls(supabase: Client, urls: List[str]) -> List[str]:
             
     return existing
 
-# --- OpenAI Setup ---
-from openai import OpenAI
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
-MODEL_EMBEDDING = "text-embedding-3-large"
-
-def generate_embedding(text):
-    if not text:
-        return None
-    try:
-        text = text.replace("\n", " ")
-        return openai_client.embeddings.create(input=[text], model=MODEL_EMBEDDING).data[0].embedding
-    except Exception as e:
-        print(f"Error generating embedding: {e}")
-        return None
-
 async def run_scraper():
     supabase = init_supabase()
+    openai_client = init_openai()
+    
     playwright, browser, context = await setup_browser()
     page = await context.new_page()
     
@@ -312,29 +325,39 @@ async def run_scraper():
             
             # 4. Upload DIRECTLY to Supabase (Successive Upsert)
             try:
-                # Upsert and return the ID
+                # A. Main Content
                 response = supabase.table(TABLE_NAME).upsert(data, on_conflict="url").execute()
                 print(f"   -> Uploaded to Supabase.")
                 
-                # 5. Vectorization
-                if response.data:
-                    inserted_record = response.data[0]
-                    notice_id = inserted_record.get('id')
-                    content = inserted_record.get('content')
-                    
-                    if notice_id and content:
-                        print("   -> Generating embedding...")
-                        embedding = generate_embedding(content)
-                        if embedding:
-                            emb_data = {
-                                "notice_id": notice_id,
-                                "embedding": embedding
-                            }
-                            supabase.table("bnm_notices_embeddings").insert(emb_data).execute()
-                            print("   -> Embedding saved.")
-                        else:
-                            print("   -> Skipping embedding (Generation failed or empty content).")
-                            
+                # B. Vectorization
+                print(f"   -> Vectorizing...")
+                chunks = get_chunks(data['content'])
+                vectors_to_upload = []
+                for idx, chunk_text in enumerate(chunks):
+                    try:
+                        embedding = get_embedding(openai_client, chunk_text)
+                        vector_record = {
+                            "url": data['url'],
+                            "chunk_index": idx,
+                            "content": chunk_text,
+                            "metadata": {
+                                "title": data['title'],
+                                "date": data['date'],
+                                "source": "bnm_scraper"
+                            },
+                            "embedding": embedding
+                        }
+                        vectors_to_upload.append(vector_record)
+                    except Exception as ve:
+                        print(f"      -> Vector generation failed for chunk {idx}: {ve}")
+                
+                if vectors_to_upload:
+                    # Cleanup old vectors first just in case
+                    supabase.table(VECTOR_TABLE).delete().eq("url", data['url']).execute()
+                    # Insert new
+                    supabase.table(VECTOR_TABLE).insert(vectors_to_upload).execute()
+                    print(f"   -> Uploaded {len(vectors_to_upload)} vectors.")
+
             except Exception as e:
                 print(f"   -> FAILED to upload: {e}")
                 if 'column "updated_at" of relation "bnm_notices" does not exist' in str(e):
