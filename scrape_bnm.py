@@ -195,7 +195,14 @@ async def scrape_details(page: Page, url: str, listing_title: str) -> Dict:
         if await date_loc.count() > 0:
             date = await date_loc.first.inner_text()
             
+        
         # Content
+        # KEY FIX: Wait for the element specifically, as some pages load it async
+        try:
+            await page.wait_for_selector('.journal-content-article', timeout=5000)
+        except:
+            pass # count will be 0 below if not found
+            
         content_loc = page.locator('.journal-content-article')
         content_md = ""
         
